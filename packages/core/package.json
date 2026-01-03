@@ -5,6 +5,8 @@
 	"exports": {
 		"./service-factory": "./src/service-factory/index.ts",
 		"./service": "./src/service/index.ts",
+		"./rpc": "./src/rpc/index.ts",
+		"./rpc/namespaces": "./src/rpc/namespaces/index.ts",
 		"./*": "./src/*"
 	},
 	"scripts": {
@@ -24,6 +26,8 @@
 		"vitest": "^3.0.0"
 	},
 	"dependencies": {
+		"@metamask/json-rpc-engine": "10.2.0",
+		"@metamask/utils": "^11.0.0",
 		"async-mutex": "^0.5.0",
 		"crc-32": "^1.2.2",
 		"immer": "^11.1.3",

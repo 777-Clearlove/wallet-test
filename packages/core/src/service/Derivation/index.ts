@@ -1,7 +1,10 @@
 import type { StoreConfig } from "../../service-factory";
 import { actions } from "./action";
-import { effects } from "./effects";
+import { effects } from "./effect";
+import { selectors } from "./selectors";
 import { type DerivationState, DerivationStateSchema } from "./schema";
+
+// ============ Store Config ============
 
 export const config: StoreConfig<DerivationState> = {
 	name: "DerivationService",
@@ -16,6 +19,8 @@ export const initialState: DerivationState = {
 	derivations: [],
 };
 
-export { actions, effects };
+// ============ Exports ============
+
+export { actions, effects, selectors };
 export type { DerivationState };
 export * from "./schema";

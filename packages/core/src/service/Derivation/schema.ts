@@ -1,4 +1,8 @@
 import { z } from "zod";
+import { createTypedDefiners } from "../../service-factory";
+import type { Services } from "..";
+
+// ============ Schemas ============
 
 export const DerivationSchema = z.object({
 	version: z.number(),
@@ -15,8 +19,15 @@ export const DerivationStateSchema = z.object({
 	derivations: z.array(DerivationSchema),
 });
 
+// ============ Types ============
+
 export type Derivation = z.infer<typeof DerivationSchema>;
 export type DerivationState = {
 	derivations: Derivation[];
 };
+
+// ============ Typed Definers (State 和 Services 类型都已绑定) ============
+
+export const { defineActions, defineEffects, defineSelectors } =
+	createTypedDefiners<DerivationState, Services>();
 

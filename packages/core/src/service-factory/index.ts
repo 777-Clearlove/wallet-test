@@ -26,3 +26,29 @@ export {
 	type StorageAdapter,
 	createSafeStorageAdapter,
 } from "./storage";
+
+// ============ Define (类型推断改进) ============
+export {
+	createTypedDefiners,
+	createTypedDefinersFromSchema,
+	type TypedDefiners,
+	type TypedActionsDefiner,
+	type TypedEffectsDefiner,
+	type TypedSelectorsDefiner,
+	type InferState,
+} from "./define";
+
+// ============ Testing ============
+export {
+	createTestServicesFactory,
+	createMemoryStorage,
+	createAsyncMemoryStorage,
+	createMockService,
+	createSnapshot,
+	compareSnapshots,
+	waitForState,
+	waitForAction,
+	type TestServices,
+	type TestServicesConfig,
+	type MemoryStorageAdapter,
+} from "./testing";

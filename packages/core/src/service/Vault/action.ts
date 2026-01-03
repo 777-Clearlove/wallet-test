@@ -1,20 +1,21 @@
-import { defineActions, validated, z } from "../../service-factory";
-import type { Services } from "..";
-import { VaultSchema, type VaultsState } from "./schema";
+import { validated, z } from "../../service-factory";
+import { defineActions, VaultSchema, type Vault } from "./schema";
 
 /**
  * Vault Actions
  *
- * defineActions<State, Services> 第二个泛型参数是 Services 类型
- * factory 函数的第三个参数是 getServices（这里暂时不需要访问其他 service）
+ * 使用从 schema.ts 导出的 defineActions
+ * State 和 Services 类型都已在 schema.ts 中绑定，无需泛型
  */
-export const actions = defineActions<VaultsState, Services>()((set, _get, _getServices) => ({
+export const actions = defineActions((set, get, getServices) => ({
+	/** 添加 Vault（带 schema 验证） */
 	add: validated(VaultSchema, (vault) => {
 		set((draft) => {
 			draft.vaults.push(vault);
 		});
 	}),
 
+	/** 根据 ID 删除 Vault */
 	remove(id: string) {
 		set((draft) => {
 			const index = draft.vaults.findIndex((v) => v.id === id);
@@ -22,6 +23,7 @@ export const actions = defineActions<VaultsState, Services>()((set, _get, _getSe
 		});
 	},
 
+	/** 更新 Vault 信息（带 schema 验证） */
 	update: validated(
 		z.object({
 			id: z.uuid(),
@@ -42,4 +44,26 @@ export const actions = defineActions<VaultsState, Services>()((set, _get, _getSe
 			});
 		},
 	),
+
+	/** 根据 ID 查找 Vault */
+	findById(id: string): Vault | undefined {
+		return get().vaults.find((v) => v.id === id);
+	},
+
+	/** 根据类型筛选 Vault */
+	findByType(type: Vault["type"]): Vault[] {
+		return get().vaults.filter((v) => v.type === type);
+	},
+
+	/** 检查 Vault 是否存在 */
+	exists(id: string): boolean {
+		return get().vaults.some((v) => v.id === id);
+	},
+
+	/** 批量删除 Vault */
+	removeMany(ids: string[]) {
+		set((draft) => {
+			draft.vaults = draft.vaults.filter((v) => !ids.includes(v.id));
+		});
+	},
 }));

@@ -1,15 +1,16 @@
-import { defineEffects } from "../../service-factory";
-import type { Services } from "..";
-import type { Derivation, DerivationState } from "./schema";
+import { defineEffects, type Derivation } from "./schema";
 
 /**
  * Derivation Effects
+ *
+ * 使用从 schema.ts 导出的 defineEffects
+ * State 和 Services 类型都已在 schema.ts 中绑定，无需泛型
  *
  * 监听 Vault 的变化，自动管理 Derivation：
  * - Vault 新增时：为 mnemonic 类型的 Vault 自动创建初始 Derivation
  * - Vault 删除时：自动删除该 Vault 下的所有 Derivation
  */
-export const effects = defineEffects<DerivationState, Services>()((get, getServices) => {
+export const effects = defineEffects((get, getServices) => {
 	const { vault, derivation } = getServices();
 
 	// 监听 vault 变化，处理新增和删除
@@ -37,17 +38,13 @@ export const effects = defineEffects<DerivationState, Services>()((get, getServi
 				derivation.getState().add(newDerivation);
 			}
 
-			// 处理删除的 vault：删除对应的所有 derivation
+			// 处理删除的 vault：使用批量删除更高效
 			const removedVaultIds = (prevVaults ?? [])
 				.filter((v) => !currentIds.has(v.id))
 				.map((v) => v.id);
 
 			for (const vaultId of removedVaultIds) {
-				const derivationsToRemove = get().derivations.filter((d) => d.vaultId === vaultId);
-
-				for (const d of derivationsToRemove) {
-					derivation.getState().remove(d.id);
-				}
+				derivation.getState().removeByVaultId(vaultId);
 			}
 		},
 		{ fireImmediately: false },
