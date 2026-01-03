@@ -6,6 +6,7 @@
  */
 
 import { Mutex } from "async-mutex";
+import crc32 from "crc-32";
 import { debounce, flow } from "lodash-es";
 import type { StorageAdapter } from "./adapter";
 
@@ -22,11 +23,15 @@ export interface DebounceOptions {
 
 /** 安全适配器组合选项 */
 export interface SafeStorageOptions {
-	/** 是否启用写入队列（防止并发冲突），默认 true */
+	/**
+	 * 是否启用写入队列（防止并发冲突）
+	 * - 同步适配器：默认 true
+	 * - 异步适配器：如果启用了 atomic，则自动禁用（atomic 自带 per-key 锁）
+	 */
 	queue?: boolean;
 	/**
 	 * 是否启用原子写入（Double Buffer + 备份），默认 true
-	 * ⚠️ 对于异步适配器，建议设为 false（会导致嵌套异步调用问题）
+	 * 自动适配同步/异步适配器，异步模式自带 per-key 锁
 	 */
 	atomic?: boolean;
 	/** 是否启用 Checksum 校验，默认 true */
@@ -38,7 +43,11 @@ export interface SafeStorageOptions {
 // ============ 原子写入增强器 ============
 
 /**
- * 原子写入增强器（Double Buffer + 备份）
+ * 统一原子写入增强器（Double Buffer + 备份）
+ *
+ * **自动适配同步/异步适配器**：
+ * - 同步适配器：保持同步返回，无额外开销
+ * - 异步适配器：自带 per-key 锁，避免并发问题
  *
  * 原理：
  * 1. 写入到临时 key（`{key}.tmp`）
@@ -49,31 +58,84 @@ export interface SafeStorageOptions {
  *
  * @example
  * ```ts
+ * // 同步适配器
  * const safeAdapter = withAtomic(localStorageAdapter);
- * // 或组合使用
- * const enhanced = flow(withQueue, withAtomic)(baseAdapter);
+ *
+ * // 异步适配器（自动检测，自带锁）
+ * const safeAdapter = withAtomic(asyncStorageAdapter);
+ *
+ * // 组合使用
+ * const enhanced = flow(withAtomic, withChecksum)(baseAdapter);
  * ```
  */
-export const withAtomic: StorageEnhancer = (base) => ({
-	getItem: (key) => {
-		const result = base.getItem(key);
+export const withAtomic: StorageEnhancer = (base) => {
+	// 惰性检测：首次调用时判断是否为异步适配器
+	let isAsync: boolean | null = null;
 
-		// 同步适配器
-		if (!(result instanceof Promise)) {
-			if (!result) {
-				const backup = base.getItem(`${key}.bak`);
-				if (backup && !(backup instanceof Promise)) {
-					console.warn(`[Atomic] Restored from backup: ${key}`);
-					base.setItem(key, backup);
-					return backup;
-				}
+	// per-key 锁（仅异步模式使用）
+	const keyLocks = new Map<string, Mutex>();
+
+	const getLock = (key: string): Mutex => {
+		let lock = keyLocks.get(key);
+		if (!lock) {
+			lock = new Mutex();
+			keyLocks.set(key, lock);
+		}
+		return lock;
+	};
+
+	// 提取纯净的 key（去除 .bak/.tmp 后缀）
+	const getPrimaryKey = (key: string): string => {
+		if (key.endsWith(".bak") || key.endsWith(".tmp")) {
+			return key.slice(0, key.lastIndexOf("."));
+		}
+		return key;
+	};
+
+	// ============ 同步实现 ============
+	const syncGetItem = (key: string): string | null => {
+		const result = base.getItem(key) as string | null;
+		if (!result) {
+			const backup = base.getItem(`${key}.bak`) as string | null;
+			if (backup) {
+				console.warn(`[Atomic] Restored from backup: ${key}`);
+				base.setItem(key, backup);
+				return backup;
 			}
-			return result;
+		}
+		return result;
+	};
+
+	const syncSetItem = (key: string, value: string): void => {
+		const tempKey = `${key}.tmp`;
+		const backupKey = `${key}.bak`;
+
+		const current = base.getItem(key) as string | null;
+		if (current) base.setItem(backupKey, current);
+
+		base.setItem(tempKey, value);
+
+		const written = base.getItem(tempKey) as string | null;
+		if (written !== value) {
+			throw new Error(`[Atomic] Write verification failed: ${key}`);
 		}
 
-		// 异步适配器
-		return result.then(async (value) => {
-			if (!value) {
+		base.setItem(key, written);
+		base.removeItem(tempKey);
+	};
+
+	const syncRemoveItem = (key: string): void => {
+		base.removeItem(key);
+		base.removeItem(`${key}.bak`);
+		base.removeItem(`${key}.tmp`);
+	};
+
+	// ============ 异步实现（带 per-key 锁）============
+	const asyncGetItem = (key: string): Promise<string | null> => {
+		const primaryKey = getPrimaryKey(key);
+		return getLock(primaryKey).runExclusive(async () => {
+			const result = await base.getItem(key);
+			if (!result && key === primaryKey) {
 				const backup = await base.getItem(`${key}.bak`);
 				if (backup) {
 					console.warn(`[Atomic] Restored from backup: ${key}`);
@@ -81,62 +143,79 @@ export const withAtomic: StorageEnhancer = (base) => ({
 					return backup;
 				}
 			}
-			return value;
+			return result;
 		});
-	},
+	};
 
-	setItem: (key, value) => {
-		const tempKey = `${key}.tmp`;
-		const backupKey = `${key}.bak`;
+	const asyncSetItem = (key: string, value: string): Promise<void> => {
+		const primaryKey = getPrimaryKey(key);
+		return getLock(primaryKey).runExclusive(async () => {
+			const tempKey = `${key}.tmp`;
+			const backupKey = `${key}.bak`;
 
-		const doWrite = async () => {
-			// 1. 备份当前数据
 			const current = await base.getItem(key);
-			if (current) {
-				await base.setItem(backupKey, current);
-			}
+			if (current) await base.setItem(backupKey, current);
 
-			// 2. 写入临时 key
 			await base.setItem(tempKey, value);
 
-			// 3. 验证写入
 			const written = await base.getItem(tempKey);
 			if (written !== value) {
 				throw new Error(`[Atomic] Write verification failed: ${key}`);
 			}
 
-			// 4. 提交到主 key
 			await base.setItem(key, written);
-
-			// 5. 清理临时文件
 			await base.removeItem(tempKey);
-		};
+		});
+	};
 
-		const result = base.getItem(key);
-		// 检测是否为异步适配器
-		if (result instanceof Promise) {
-			return doWrite();
+	const asyncRemoveItem = (key: string): Promise<void> => {
+		const primaryKey = getPrimaryKey(key);
+		return getLock(primaryKey).runExclusive(async () => {
+			await base.removeItem(key);
+			await base.removeItem(`${key}.bak`);
+			await base.removeItem(`${key}.tmp`);
+		});
+	};
+
+	// ============ 检测并路由 ============
+	const detectAndRoute = <T>(
+		key: string,
+		syncFn: (k: string) => T,
+		asyncFn: (k: string) => Promise<T>,
+	): T | Promise<T> => {
+		// 首次调用时检测
+		if (isAsync === null) {
+			const testResult = base.getItem(key);
+			isAsync = testResult instanceof Promise;
 		}
+		return isAsync ? asyncFn(key) : syncFn(key);
+	};
 
-		// 同步适配器的同步路径
-		const current = result;
-		if (current) base.setItem(backupKey, current);
-		base.setItem(tempKey, value);
-		const written = base.getItem(tempKey);
-		if (written !== value) {
-			throw new Error(`[Atomic] Write verification failed: ${key}`);
-		}
-		base.setItem(key, written as string);
-		base.removeItem(tempKey);
-	},
+	return {
+		getItem: (key) => detectAndRoute(key, syncGetItem, asyncGetItem),
 
-	removeItem: (key) => {
-		const result = base.removeItem(key);
-		base.removeItem(`${key}.bak`);
-		base.removeItem(`${key}.tmp`);
-		return result;
-	},
-});
+		setItem: (key, value) => {
+			if (isAsync === null) {
+				const testResult = base.getItem(key);
+				isAsync = testResult instanceof Promise;
+			}
+			return isAsync ? asyncSetItem(key, value) : syncSetItem(key, value);
+		},
+
+		removeItem: (key) => {
+			if (isAsync === null) {
+				const testResult = base.getItem(key);
+				isAsync = testResult instanceof Promise;
+			}
+			return isAsync ? asyncRemoveItem(key) : syncRemoveItem(key);
+		},
+	};
+};
+
+/**
+ * @deprecated 请使用统一的 `withAtomic`，它已自动支持异步适配器
+ */
+export const withAtomicAsync = withAtomic;
 
 // ============ 防抖写入增强器 ============
 
@@ -206,23 +285,6 @@ export const withDebounce =
 
 // ============ Checksum 校验增强器 ============
 
-// CRC32 查找表
-const CRC32_TABLE = Array.from({ length: 256 }, (_, i) => {
-	let c = i;
-	for (let j = 0; j < 8; j++) {
-		c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-	}
-	return c;
-});
-
-const crc32 = (str: string): number => {
-	let crc = -1;
-	for (let i = 0; i < str.length; i++) {
-		crc = (crc >>> 8) ^ CRC32_TABLE[(crc ^ str.charCodeAt(i)) & 0xff]!;
-	}
-	return (crc ^ -1) >>> 0;
-};
-
 interface ChecksummedData {
 	d: string; // data
 	c: number; // checksum
@@ -242,7 +304,7 @@ export const withChecksum: StorageEnhancer = (base) => {
 		if (!raw) return null;
 		try {
 			const { d, c } = JSON.parse(raw) as ChecksummedData;
-			if (crc32(d) !== c) {
+			if (crc32.str(d) !== c) {
 				console.error("[Checksum] Data corrupted");
 				return null;
 			}
@@ -265,7 +327,7 @@ export const withChecksum: StorageEnhancer = (base) => {
 		setItem: (key, value) => {
 			const wrapped: ChecksummedData = {
 				d: value,
-				c: crc32(value),
+				c: crc32.str(value),
 				t: Date.now(),
 			};
 			return base.setItem(key, JSON.stringify(wrapped));
@@ -320,31 +382,25 @@ export const withQueue: StorageEnhancer = (base) => {
 /**
  * 创建安全存储适配器（推荐用于生产环境）
  *
- * 默认包含：Queue → Atomic → Checksum
- * 可选开启：Debounce（最外层）
+ * 默认管道：Queue → Checksum → Atomic → Debounce
+ * - `withChecksum` 在最内层，确保所有数据（包括 .tmp/.bak）都有校验保护
+ * - `withAtomic` 自动适配同步/异步，异步模式自带 per-key 锁
+ * - 同步适配器可额外启用 `queue`（默认禁用，因为同步操作本身是原子的）
  *
  * @example
  * ```ts
- * // 基础用法（同步适配器，如 localStorage）
+ * // 基础用法（自动适配同步/异步）
  * const adapter = createSafeStorage(localStorageAdapter);
- *
- * // 异步适配器（如 AsyncStorage）- 禁用 atomic
- * const adapter = createSafeStorage(asyncStorageAdapter, {
- *   atomic: false,  // 异步适配器必须禁用
- * });
+ * const adapter = createSafeStorage(asyncStorageAdapter);
  *
  * // 带防抖（高频写入场景）
  * const adapter = createSafeStorage(baseAdapter, {
  *   debounce: { wait: 300, maxWait: 1000 }
  * });
  *
- * // 自定义组合（直接用 lodash-es 的 flow）
+ * // 自定义组合
  * import { flow } from "lodash-es";
- * const adapter = flow(
- *   withQueue,
- *   withAtomic,
- *   withDebounce({ wait: 500 })
- * )(baseAdapter);
+ * const adapter = flow(withChecksum, withAtomic)(baseAdapter);
  * ```
  */
 export function createSafeStorage(
@@ -352,25 +408,26 @@ export function createSafeStorage(
 	options: SafeStorageOptions = {},
 ): StorageAdapter {
 	const {
-		queue = true,
+		queue = false, // 默认禁用：withAtomic 异步模式自带锁，同步模式本身是原子的
 		atomic = true,
 		checksum = true,
 		debounce: debounceOpt,
 	} = options;
 
-	// 构建增强器管道
+	// 构建增强器管道（从内到外）
+	// 调用顺序：debounce → atomic → checksum → queue → base
 	const enhancers: StorageEnhancer[] = [];
 
-	// 1. 队列（最内层）- 异步适配器必须
+	// 1. 队列（最内层，直接操作底层存储）
 	if (queue) enhancers.push(withQueue);
 
-	// 2. 原子写入 - 对异步适配器可能有问题，可选禁用
-	if (atomic) enhancers.push(withAtomic);
-
-	// 3. 校验和
+	// 2. 校验和（确保所有写入数据都有 checksum，包括 .tmp/.bak）
 	if (checksum) enhancers.push(withChecksum);
 
-	// 4. 防抖（最外层）
+	// 3. 原子写入（Double Buffer，操作已有 checksum 的数据）
+	if (atomic) enhancers.push(withAtomic);
+
+	// 4. 防抖（最外层，控制调用频率）
 	if (debounceOpt) {
 		const opts = typeof debounceOpt === "boolean" ? {} : debounceOpt;
 		enhancers.push(withDebounce(opts));

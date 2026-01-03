@@ -1,7 +1,14 @@
 import { defineActions, validated, z } from "../../service-factory";
+import type { Services } from "..";
 import { VaultSchema, type VaultsState } from "./schema";
 
-export const actions = defineActions<VaultsState>()((set, get) => ({
+/**
+ * Vault Actions
+ *
+ * defineActions<State, Services> 第二个泛型参数是 Services 类型
+ * factory 函数的第三个参数是 getServices（这里暂时不需要访问其他 service）
+ */
+export const actions = defineActions<VaultsState, Services>()((set, _get, _getServices) => ({
 	add: validated(VaultSchema, (vault) => {
 		set((draft) => {
 			draft.vaults.push(vault);
@@ -29,23 +36,10 @@ export const actions = defineActions<VaultsState>()((set, get) => ({
 				const vault = draft.vaults.find((v) => v.id === id);
 				if (vault) {
 					if (updates.name !== undefined) vault.name = updates.name;
-					if (updates.updatedAt !== undefined)
-						vault.updatedAt = updates.updatedAt;
+					if (updates.updatedAt !== undefined) vault.updatedAt = updates.updatedAt;
 					if (updates.version !== undefined) vault.version = updates.version;
 				}
 			});
 		},
 	),
-
-	async fetchAndAdd(id: string) {
-		const exists = get().vaults.some((v) => v.id === id);
-		if (exists) return;
-
-		const response = await fetch(`/api/vaults/${id}`);
-		const data = await response.json();
-		const vault = VaultSchema.parse(data);
-		set((draft) => {
-			draft.vaults.push(vault);
-		});
-	},
 }));

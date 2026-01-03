@@ -1,92 +1,76 @@
+/**
+ * Service Layer - 统一实例化所有 Service
+ */
 import { combineLatest, filter, map, take, type Observable } from "rxjs";
-import {
-	createServiceFactory,
-	type StorageAdapter,
-	type HydrationState,
-	defaultStorageAdapter,
-} from "../service-factory";
+import { createServiceFactory, type HydrationState, type StorageAdapter, defaultStorageAdapter } from "../service-factory";
+
 import {
 	config as VaultConfig,
 	initialState as VaultInitialState,
-	actions as VaultActions,
+	actions as vaultActions,
 } from "./Vault";
+import {
+	config as DerivationConfig,
+	initialState as DerivationInitialState,
+	actions as derivationActions,
+	effects as derivationEffects,
+} from "./Derivation";
 
+// ============ 类型注册表（声明合并） ============
+export interface ServiceRegistry {}
+export type Services = ServiceRegistry;
+
+// ============ 类型导出 ============
+export type { Vault, VaultType, VaultSource, VaultsState } from "./Vault";
+export type { Derivation, DerivationState } from "./Derivation";
+export { VaultSchema, VaultsStateSchema } from "./Vault";
+export { DerivationSchema, DerivationStateSchema } from "./Derivation";
+
+// ============ 配置接口 ============
 export interface PlatformConfig {
 	storageAdapter?: StorageAdapter;
 	skipHydration?: boolean;
 }
 
-/** Service 实例的通用接口（用于 hydration 相关方法） */
+// ============ Hydration Helpers ============
 interface ServiceInstance {
 	waitForHydration: () => Promise<HydrationState>;
 	getHydrationState: () => HydrationState;
 	hydrationState$: Observable<HydrationState>;
 }
 
-/** 所有 Service 的 Hydration 状态汇总 */
 export interface AllHydrationState<T extends Record<string, ServiceInstance>> {
-	/** 各 Service 的 hydration 状态 */
 	states: { [K in keyof T]: HydrationState };
-	/** 是否所有 Service 都已完成 hydration */
 	allHydrated: boolean;
-	/** 是否有任何 Service 使用了 fallback */
 	anyFallback: boolean;
-	/** 是否有任何 Service 发生 hydration 错误 */
 	anyError: boolean;
-	/** 所有 hydration 错误列表 */
 	errors: Array<{ service: keyof T; error: Error }>;
 }
 
-/**
- * 等待多个 Service 的 hydration 完成
- */
-function createHydrationHelpers<T extends Record<string, ServiceInstance>>(
-	services: T,
-) {
+function createHydrationHelpers<T extends Record<string, ServiceInstance>>(services: T) {
 	const serviceEntries = Object.entries(services) as [keyof T, ServiceInstance][];
 
-	const buildAllHydrationState = (
-		states: { [K in keyof T]: HydrationState },
-	): AllHydrationState<T> => {
+	const buildAllHydrationState = (states: { [K in keyof T]: HydrationState }): AllHydrationState<T> => {
 		const entries = Object.entries(states) as [keyof T, HydrationState][];
-		const allHydrated = entries.every(([, s]) => s.hasHydrated);
-		const anyFallback = entries.some(([, s]) => s.usedFallback);
-		const anyError = entries.some(([, s]) => s.hydrationError !== null);
-		const errors = entries
-			.filter(([, s]) => s.hydrationError !== null)
-			.map(([key, s]) => ({ service: key, error: s.hydrationError! }));
-
-		return { states, allHydrated, anyFallback, anyError, errors };
+		return {
+			states,
+			allHydrated: entries.every(([, s]) => s.hasHydrated),
+			anyFallback: entries.some(([, s]) => s.usedFallback),
+			anyError: entries.some(([, s]) => s.hydrationError !== null),
+			errors: entries
+				.filter(([, s]) => s.hydrationError !== null)
+				.map(([key, s]) => ({ service: key, error: s.hydrationError! })),
+		};
 	};
 
 	return {
-		/**
-		 * 等待所有 Service 的 hydration 完成
-		 *
-		 * @example
-		 * ```ts
-		 * const { vault, wallet } = createServices();
-		 * const result = await waitForAllHydration();
-		 * if (result.anyError) {
-		 *   console.error("Hydration errors:", result.errors);
-		 * }
-		 * ```
-		 */
 		waitForAllHydration: async (): Promise<AllHydrationState<T>> => {
 			const results = await Promise.all(
-				serviceEntries.map(async ([key, service]) => {
-					const state = await service.waitForHydration();
-					return [key, state] as const;
-				}),
+				serviceEntries.map(async ([key, service]) => [key, await service.waitForHydration()] as const),
 			);
-
-			const states = Object.fromEntries(results) as { [K in keyof T]: HydrationState };
-			return buildAllHydrationState(states);
+			return buildAllHydrationState(Object.fromEntries(results) as { [K in keyof T]: HydrationState });
 		},
 
-		/**
-		 * 获取所有 Service 的当前 hydration 状态（同步）
-		 */
 		getAllHydrationState: (): AllHydrationState<T> => {
 			const states = Object.fromEntries(
 				serviceEntries.map(([key, service]) => [key, service.getHydrationState()]),
@@ -94,23 +78,16 @@ function createHydrationHelpers<T extends Record<string, ServiceInstance>>(
 			return buildAllHydrationState(states);
 		},
 
-		/**
-		 * 所有 Service 的 hydration 状态 Observable
-		 * 当任意 Service 的 hydration 状态变化时发出新值
-		 */
 		allHydrationState$: combineLatest(
-			Object.fromEntries(
-				serviceEntries.map(([key, service]) => [key, service.hydrationState$]),
-			) as { [K in keyof T]: Observable<HydrationState> },
+			Object.fromEntries(serviceEntries.map(([key, service]) => [key, service.hydrationState$])) as {
+				[K in keyof T]: Observable<HydrationState>;
+			},
 		).pipe(map((states) => buildAllHydrationState(states as { [K in keyof T]: HydrationState }))),
 
-		/**
-		 * 等待所有 Service hydration 完成的 Observable（只发出一次值）
-		 */
 		allHydrated$: combineLatest(
-			Object.fromEntries(
-				serviceEntries.map(([key, service]) => [key, service.hydrationState$]),
-			) as { [K in keyof T]: Observable<HydrationState> },
+			Object.fromEntries(serviceEntries.map(([key, service]) => [key, service.hydrationState$])) as {
+				[K in keyof T]: Observable<HydrationState>;
+			},
 		).pipe(
 			map((states) => buildAllHydrationState(states as { [K in keyof T]: HydrationState })),
 			filter((state) => state.allHydrated),
@@ -119,30 +96,62 @@ function createHydrationHelpers<T extends Record<string, ServiceInstance>>(
 	};
 }
 
+// ============ createServices ============
 export function createServices(platform?: PlatformConfig) {
-	const { storageAdapter = defaultStorageAdapter, skipHydration = false } =
-		platform ?? {};
+	const { storageAdapter = defaultStorageAdapter, skipHydration = false } = platform ?? {};
 
-	const createFactory = <State extends object, PersistedState extends Partial<State> = State>(
-		config: Parameters<typeof createServiceFactory<State, PersistedState>>[0],
-	) =>
-		createServiceFactory<State, PersistedState>({
-			...config,
-			storageAdapter,
-			skipHydration,
-		});
+	// 延迟绑定 services（解决循环依赖）
+	let services: Services;
+	const getServices = (): Services => services;
 
-	const createVaultStore = createFactory(VaultConfig);
-	const vault = createVaultStore(VaultInitialState, { actions: VaultActions });
+	// 统一实例化所有 Store
+	const vault = createServiceFactory({
+		...VaultConfig,
+		storageAdapter,
+		skipHydration,
+	})(VaultInitialState, { actions: vaultActions, getServices });
 
-	// 所有 Service 实例
-	const services = { vault };
+	const derivation = createServiceFactory({
+		...DerivationConfig,
+		storageAdapter,
+		skipHydration,
+	})(DerivationInitialState, { actions: derivationActions, getServices });
 
-	// Hydration 相关辅助方法
-	const hydrationHelpers = createHydrationHelpers(services);
+	// 组装 services
+	services = { vault, derivation } as Services;
+
+	// 初始化 Effects
+	const cleanups: (() => void)[] = [];
+
+	// Derivation Effects: 监听 Vault 变化，自动管理 Derivation
+	const derivationCleanups = derivationEffects(
+		() => derivation.getState(),
+		getServices,
+	);
+	cleanups.push(...(Array.isArray(derivationCleanups) ? derivationCleanups : [derivationCleanups]));
+
+	// Hydration helpers
+	const hydrationHelpers = createHydrationHelpers({ vault, derivation });
 
 	return {
-		...services,
+		vault,
+		derivation,
 		...hydrationHelpers,
+		destroy: () => {
+			for (const cleanup of cleanups) cleanup();
+			vault.destroy();
+			derivation.destroy();
+		},
 	};
+}
+
+// ============ 声明合并：注册 Store 类型 ============
+type VaultStore = ReturnType<typeof createServices>["vault"];
+type DerivationStore = ReturnType<typeof createServices>["derivation"];
+
+declare module "." {
+	interface ServiceRegistry {
+		vault: VaultStore;
+		derivation: DerivationStore;
+	}
 }

@@ -11,4 +11,12 @@ export const DerivationSchema = z.object({
 	vaultId: z.uuid(),
 });
 
+export const DerivationStateSchema = z.object({
+	derivations: z.array(DerivationSchema),
+});
+
 export type Derivation = z.infer<typeof DerivationSchema>;
+export type DerivationState = {
+	derivations: Derivation[];
+};
+

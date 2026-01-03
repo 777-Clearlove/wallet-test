@@ -41,3 +41,4 @@ export type VaultSource = Vault["source"];
 export type VaultsState = {
 	vaults: Vault[];
 };
+

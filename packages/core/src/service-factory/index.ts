@@ -1,12 +1,15 @@
 export {
 	createServiceFactory,
 	defineActions,
+	defineEffects,
 	createFactoryBuilder,
 	type StoreConfig,
 	type FactoryBuilderConfig,
 	type ImmerSet,
 	type ActionsObject,
 	type ActionsFactory,
+	type EffectsFactory,
+	type EffectsCleanup,
 	type HydrationState,
 } from "./factory";
 

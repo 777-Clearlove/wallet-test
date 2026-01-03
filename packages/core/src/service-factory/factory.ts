@@ -97,9 +97,10 @@ export type ImmerSet<State> = (fn: (draft: State) => void) => void;
 // biome-ignore lint/suspicious/noExplicitAny: generic action signature
 export type ActionsObject = Record<string, (...args: any[]) => any>;
 
-export type ActionsFactory<State, A extends ActionsObject> = (
+export type ActionsFactory<State, A extends ActionsObject, S = unknown> = (
 	set: ImmerSet<State>,
 	get: () => State,
+	getServices: () => S,
 ) => A;
 
 export interface HydrationState {
@@ -125,10 +126,53 @@ export interface StoreConfig<
 	enableCrossTabSync?: boolean;
 }
 
-export function defineActions<State>() {
+export function defineActions<State, S = unknown>() {
 	return <A extends ActionsObject>(
-		factory: ActionsFactory<State, A>,
-	): ActionsFactory<State, A> => factory;
+		factory: ActionsFactory<State, A, S>,
+	): ActionsFactory<State, A, S> => factory;
+}
+
+// ============ Effects ============
+
+/**
+ * Effects 清理函数类型
+ */
+export type EffectsCleanup = () => void;
+
+/**
+ * Effects 工厂函数类型
+ *
+ * @param get - 获取当前 Service 的状态
+ * @param getServices - 获取所有 Services（支持跨 Service 订阅）
+ * @returns 清理函数或清理函数数组
+ */
+export type EffectsFactory<State, S = unknown> = (
+	get: () => State,
+	getServices: () => S,
+) => EffectsCleanup | EffectsCleanup[];
+
+/**
+ * 定义 Effects（副作用）
+ *
+ * 用于监听其他 Service 的状态变化并做出响应
+ * 类似 defineActions 的柯里化模式，支持类型推断
+ *
+ * @example
+ * ```ts
+ * export const effects = defineEffects<DerivationState, Services>()((get, getServices) => {
+ *   const { vault, derivation } = getServices();
+ *
+ *   return vault.subscribe(
+ *     (state) => state.vaults,
+ *     (vaults, prevVaults) => {
+ *       // 处理变化
+ *     },
+ *   );
+ * });
+ * ```
+ */
+export function defineEffects<State, S = unknown>() {
+	return (factory: EffectsFactory<State, S>): EffectsFactory<State, S> => factory;
 }
 
 export interface FactoryBuilderConfig {
@@ -170,11 +214,11 @@ export function createServiceFactory<
 		enableCrossTabSync = false,
 	} = config;
 
-	return function factory<A extends ActionsObject>(
+	return function factory<A extends ActionsObject, S = unknown>(
 		initialState: State,
-		definition: { actions: ActionsFactory<State, A> },
+		definition: { actions: ActionsFactory<State, A, S>; getServices?: () => S },
 	) {
-		const { actions: actionsFactory } = definition;
+		const { actions: actionsFactory, getServices = () => ({}) as S } = definition;
 
 		const hydrationState$ = new BehaviorSubject<HydrationState>({
 			hasHydrated: false,
@@ -192,7 +236,7 @@ export function createServiceFactory<
 		// 创建 storage：有 schema 时添加 hydration 验证装饰器
 		const baseStorage = createJSONStorage<PersistedState>(
 			() => toStateStorage(storageAdapter),
-		);
+		)!;
 
 		const storage = schema
 			? withHydrationValidation(baseStorage, {
@@ -245,7 +289,7 @@ export function createServiceFactory<
 								);
 							};
 
-							const rawActions = actionsFactory(namedSet, get as () => State);
+							const rawActions = actionsFactory(namedSet, get as () => State, getServices);
 
 							const wrappedActions = mapValues(
 								rawActions,

@@ -8,7 +8,7 @@
 @repo/core
 ├── service-factory/      # 核心工厂（内部实现）
 │   ├── factory.ts        # createServiceFactory 主逻辑
-│   ├── validation.ts     # Zod 验证包装器
+│   ├── validation.ts     # Zod 验证包装器】
 │   └── storage/          # 跨端存储适配器系统
 │
 └── service/              # 业务服务层
