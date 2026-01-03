@@ -4,6 +4,12 @@
  * 业务类型定义，JSON-RPC 基础类型直接使用 @metamask/utils
  */
 import type { Json } from "@metamask/utils";
+import {
+	ErrorCodes,
+	RpcErrorCodes,
+	ProviderErrorCodes,
+	WalletErrorCodes,
+} from "../errors";
 
 // Re-export MetaMask types for convenience
 export type {
@@ -33,27 +39,39 @@ export type RpcContext = {
 	readonly source: RpcSource;
 };
 
-// ============ 错误码 (EIP-1193 + 自定义) ============
+// ============ 错误码 (使用统一错误模块) ============
 
+/**
+ * RPC 错误码
+ *
+ * 整合了 JSON-RPC 2.0、EIP-1193 和钱包业务错误码
+ * @see @repo/core/errors 获取完整错误码列表
+ */
 export const RpcErrorCode = {
 	// JSON-RPC 2.0 标准
-	ParseError: -32700,
-	InvalidRequest: -32600,
-	MethodNotFound: -32601,
-	InvalidParams: -32602,
-	InternalError: -32603,
+	ParseError: RpcErrorCodes.ParseError,
+	InvalidRequest: RpcErrorCodes.InvalidRequest,
+	MethodNotFound: RpcErrorCodes.MethodNotFound,
+	InvalidParams: RpcErrorCodes.InvalidParams,
+	InternalError: RpcErrorCodes.InternalError,
 
 	// EIP-1193 Provider Errors
-	UserRejected: 4001,
-	Unauthorized: 4100,
-	UnsupportedMethod: 4200,
-	Disconnected: 4900,
-	ChainDisconnected: 4901,
+	UserRejected: ProviderErrorCodes.UserRejected,
+	Unauthorized: ProviderErrorCodes.Unauthorized,
+	UnsupportedMethod: ProviderErrorCodes.UnsupportedMethod,
+	Disconnected: ProviderErrorCodes.Disconnected,
+	ChainDisconnected: ProviderErrorCodes.ChainDisconnected,
 
-	// 自定义 Wallet Errors (-32000 ~ -32099)
-	WalletLocked: -32002,
-	ChainNotSupported: -32003,
+	// 自定义 Wallet Errors
+	WalletLocked: WalletErrorCodes.WalletLocked,
+	ChainNotSupported: WalletErrorCodes.ChainNotSupported,
+	ValidationFailed: WalletErrorCodes.ValidationFailed,
+	VaultNotFound: WalletErrorCodes.VaultNotFound,
+	AccountNotFound: WalletErrorCodes.AccountNotFound,
+	PermissionDenied: WalletErrorCodes.PermissionDenied,
 } as const;
+
+export type RpcErrorCodeType = (typeof RpcErrorCode)[keyof typeof RpcErrorCode];
 
 // ============ 权限类型 ============
 

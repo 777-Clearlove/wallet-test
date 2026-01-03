@@ -16,8 +16,9 @@
  * });
  * ```
  */
+import type { JsonRpcRequest, JsonRpcResponse } from "@metamask/utils";
 import type { Connection, ConnectionEvent, Transport } from "../transport";
-import type { ProviderEventType, RpcRequest, RpcResponse } from "../types";
+import type { ProviderEventType } from "../types";
 
 // ============ 类型定义 ============
 
@@ -52,8 +53,8 @@ const PROTOCOL_VERSION = 1;
 type Envelope =
 	| { type: "handshake"; sessionId: string; payload: { handshakeId: string } }
 	| { type: "handshake_ack"; sessionId: string; payload: HandshakeAckPayload }
-	| { type: "request"; sessionId: string; id: string; payload: RpcRequest }
-	| { type: "response"; sessionId: string; id: string; payload: RpcResponse }
+	| { type: "request"; sessionId: string; id: string; payload: JsonRpcRequest }
+	| { type: "response"; sessionId: string; id: string; payload: JsonRpcResponse }
 	| { type: "event"; sessionId: string; payload: { event: string; params: unknown[] } };
 
 type HandshakeAckPayload = {
@@ -232,7 +233,7 @@ export const createPortTransport = (config: PortTransportConfig): Transport => {
 		sessions.clear();
 	};
 
-	const send = (connectionId: string, response: RpcResponse) => {
+	const send = (connectionId: string, response: JsonRpcResponse) => {
 		const sessionId = sessions.get(connectionId);
 		if (!sessionId) return;
 
